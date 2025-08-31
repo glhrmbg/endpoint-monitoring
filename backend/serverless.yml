@@ -1,0 +1,65 @@
+service: endpoint-monitoring
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+
+  # Global environment variables
+  environment:
+    MONITORS_TABLE: ${self:service}-${self:provider.stage}
+
+  # IAM permissions
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - "arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.MONITORS_TABLE}"
+
+# Lambda functions
+functions:
+  lambda:
+    name: ${self:service}-${self:provider.stage}
+    handler: src/handler.handler
+    description: High-performance concurrent endpoint monitor
+    timeout: 300
+    memorySize: 512
+    events:
+      - schedule:
+          rate: rate(5 minutes)
+          enabled: true
+
+# AWS Resources
+resources:
+  Resources:
+    MonitorsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.MONITORS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: monitorId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: monitorId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+        # Tags
+        Tags:
+          - Key: Service
+            Value: ${self:service}
+          - Key: Stage
+            Value: ${self:provider.stage}
+
+# Required plugins
+plugins:
+  - serverless-offline

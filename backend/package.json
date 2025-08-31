@@ -1,0 +1,15 @@
+{
+  "name": "endpoint-monitoring",
+  "version": "1.0.0",
+  "description": "Simple endpoint monitor for URLs and Certificates",
+  "author": "Guilherme Brilhante Guimarães",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.x.x"
+  },
+  "devDependencies": {
+    "serverless": "^4.x.x",
+    "serverless-offline": "^14.x.x",
+    "jest": "^29.x.x"
+  }
+}
