@@ -5,11 +5,12 @@
   "author": "Guilherme Brilhante Guimarães",
   "license": "MIT",
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.x.x"
+    "@aws-sdk/client-dynamodb": "^3.x.x",
+    "@aws-sdk/util-dynamodb": "^3.x.x"
   },
   "devDependencies": {
+    "jest": "^29.x.x",
     "serverless": "^4.x.x",
-    "serverless-offline": "^14.x.x",
-    "jest": "^29.x.x"
+    "serverless-offline": "^14.x.x"
   }
 }

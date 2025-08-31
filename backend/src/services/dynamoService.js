@@ -1,11 +1,12 @@
-const { ScanCommand, PutItemCommand, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
-const { dynamoClient, MONITORS_TABLE } = require('../config/aws');
-const { marshallItem, unmarshallItem } = require('../utils/helpers');
-const logger = require('../utils/logger');
+const { DynamoDBClient, ScanCommand, PutItemCommand, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
 
-/**
- * Serviços do DynamoDB - AWS SDK v3
- */
+// Inicialização direta - sem arquivo de config desnecessário
+const dynamoClient = new DynamoDBClient({
+    region: process.env.AWS_REGION || 'us-east-1'
+});
+
+const MONITORS_TABLE = process.env.MONITORS_TABLE || 'Monitors';
 
 const getAllMonitors = async () => {
     try {
@@ -14,120 +15,94 @@ const getAllMonitors = async () => {
         });
 
         const response = await dynamoClient.send(command);
-        const items = response.Items || [];
-
-        return items.map(unmarshallItem);
+        return (response.Items || []).map(item => unmarshall(item));
 
     } catch (error) {
-        logger.error('Erro ao buscar monitores:', error.message);
+        console.error('[ERROR] Erro ao buscar monitores:', error.message);
         return [];
     }
 };
 
 const saveMonitor = async (monitor) => {
     try {
-        // Converter isActive para boolean no DynamoDB
-        const itemToSave = { ...monitor };
-        if (typeof itemToSave.isActive === 'string') {
-            itemToSave.isActive = itemToSave.isActive === 'true';
-        }
-
-        const marshalled = {};
-        for (const [key, value] of Object.entries(itemToSave)) {
-            if (key === 'isActive') {
-                marshalled[key] = { BOOL: Boolean(value) };
-            } else {
-                marshalled[key] = { S: value?.toString() || '' };
-            }
-        }
-
         const command = new PutItemCommand({
             TableName: MONITORS_TABLE,
-            Item: marshalled
+            Item: marshall({
+                ...monitor,
+                isActive: Boolean(monitor.isActive)
+            }, {
+                removeUndefinedValues: true
+            })
         });
 
         await dynamoClient.send(command);
-        logger.debug(`Monitor ${monitor.alias} salvo com sucesso`);
+        console.log(`[DEBUG] Monitor ${monitor.alias} salvo com sucesso`);
         return true;
 
     } catch (error) {
-        logger.error('Erro ao salvar monitor:', error.message);
+        console.error('[ERROR] Erro ao salvar monitor:', error.message);
         return false;
     }
 };
 
 const updateMonitorResult = async (monitorId, httpResult, sslResult) => {
     try {
-        const currentTime = Date.now().toString();
-
-        // Processar SSL result com tipos corretos
-        const sslMarshalled = {};
-
-        for (const [key, value] of Object.entries(sslResult)) {
-            if (key === 'isValid') {
-                // isValid como boolean
-                sslMarshalled[key] = { BOOL: value === 'true' };
-            } else if (key === 'alternativeNames') {
-                // alternativeNames como array de strings
+        // Processar sslResult
+        const processedSSLResult = {
+            ...sslResult,
+            isValid: Boolean(sslResult.isValid === 'true'),
+            alternativeNames: (() => {
                 try {
-                    const altNames = JSON.parse(value);
-                    if (Array.isArray(altNames) && altNames.length > 0) {
-                        sslMarshalled[key] = {
-                            L: altNames.map(name => ({ S: name }))
-                        };
-                    } else {
-                        sslMarshalled[key] = { NULL: true };
-                    }
+                    const parsed = JSON.parse(sslResult.alternativeNames || '[]');
+                    return Array.isArray(parsed) ? parsed : [];
                 } catch {
-                    sslMarshalled[key] = { NULL: true };
+                    return [];
                 }
-            } else if (key === 'error') {
-                // error como null se vazio, senão string
-                if (value && value.trim() !== '') {
-                    sslMarshalled[key] = { S: value };
-                } else {
-                    sslMarshalled[key] = { NULL: true };
-                }
-            } else {
-                // outros campos como string (subject, issuer, etc.)
-                if (value && value.trim() !== '') {
-                    sslMarshalled[key] = { S: value };
-                } else {
-                    sslMarshalled[key] = { NULL: true };
-                }
+            })()
+        };
+
+        // Remover campos vazios
+        Object.keys(processedSSLResult).forEach(key => {
+            if (processedSSLResult[key] === '' || processedSSLResult[key] === null) {
+                delete processedSSLResult[key];
             }
+        });
+
+        const updateData = {
+            lastChecked: Date.now().toString(),
+            currentStatus: httpResult.status,
+            currentResponseTime: httpResult.responseTime,
+            currentStatusCode: httpResult.statusCode,
+            ssl: processedSSLResult
+        };
+
+        // Só adicionar error se existir
+        if (httpResult.error && httpResult.error.trim() !== '') {
+            updateData.currentError = httpResult.error;
         }
 
         const command = new UpdateItemCommand({
             TableName: MONITORS_TABLE,
-            Key: {
-                monitorId: { S: monitorId }
-            },
-            UpdateExpression: `
-                SET lastChecked = :timestamp,
-                    currentStatus = :status,
-                    currentResponseTime = :response_time,
-                    currentStatusCode = :status_code,
-                    currentError = :error,
-                    ssl = :ssl
-            `,
-            ExpressionAttributeValues: {
-                ':timestamp': { S: currentTime },
-                ':status': { S: httpResult.status },
-                ':response_time': { S: httpResult.responseTime },
-                ':status_code': { S: httpResult.statusCode },
-                ':error': httpResult.error && httpResult.error.trim() !== ''
-                    ? { S: httpResult.error }
-                    : { NULL: true },
-                ':ssl': { M: sslMarshalled }
-            }
+            Key: marshall({ monitorId }),
+            UpdateExpression: `SET ${Object.keys(updateData).map((key, index) => `#attr${index} = :val${index}`).join(', ')}`,
+            ExpressionAttributeNames: Object.keys(updateData).reduce((acc, key, index) => {
+                acc[`#attr${index}`] = key;
+                return acc;
+            }, {}),
+            ExpressionAttributeValues: marshall(
+                Object.keys(updateData).reduce((acc, key, index) => {
+                    acc[`:val${index}`] = updateData[key];
+                    return acc;
+                }, {}),
+                { removeUndefinedValues: true }
+            )
         });
 
         await dynamoClient.send(command);
         return true;
 
     } catch (error) {
-        logger.error(`Erro ao salvar resultado para ${monitorId}:`, error.message);
+        console.error(`[ERROR] Erro ao salvar resultado para ${monitorId}:`, error.message);
         return false;
     }
 };

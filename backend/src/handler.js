@@ -1,84 +1,118 @@
 const { getAllMonitors, saveMonitor, updateMonitorResult } = require('./services/dynamoService');
 const { checkHttp } = require('./services/httpService');
 const { checkSSL } = require('./services/sslService');
-const { STATUS, PROTOCOL, DEFAULTS } = require('./utils/constants');
 const {
-    generateUUID,
     sleep,
-    getCurrentTimestamp,
     extractHostname,
     isHttps,
-    safeParseInt
+    safeParseInt,
+    isValidUrl,
+    normalizeBoolean
 } = require('./utils/helpers');
-const logger = require('./utils/logger');
+const crypto = require('crypto');
 
-/**
- * Handler principal - Versão HÍBRIDA CommonJS
- */
+
+const validateMonitor = (monitor) => {
+    const errors = [];
+
+    if (!monitor.url || !isValidUrl(monitor.url)) {
+        errors.push('URL inválida ou ausente');
+    }
+
+    return {
+        isValid: errors.length === 0,
+        errors
+    };
+};
 
 const prepareMonitor = async (monitor) => {
+    const validation = validateMonitor(monitor);
+
+    if (!validation.isValid) {
+        console.error(`[ERROR] Monitor inválido: ${validation.errors.join(', ')}`);
+        return {
+            ...monitor,
+            isActive: false,
+            alias: monitor.alias || 'Monitor Inválido'
+        };
+    }
+
     let updated = false;
-    const currentTimestamp = getCurrentTimestamp();
+    const currentTimestamp = Date.now().toString();
 
-    const defaults = {
-        monitorId: monitor.monitorId || generateUUID(),
-        type: isHttps(monitor.url) ? PROTOCOL.HTTPS : PROTOCOL.HTTP,
-        timeout: monitor.timeout?.toString() || DEFAULTS.TIMEOUT.toString(),
-        isActive: monitor.isActive !== undefined ? monitor.isActive : true, // Boolean padrão
-        createdAt: monitor.createdAt || currentTimestamp
-    };
+    // Aplicar defaults apenas se necessário
+    const updates = {};
 
-    for (const [field, defaultValue] of Object.entries(defaults)) {
-        if (monitor[field] === undefined) {
-            monitor[field] = defaultValue;
+    if (!monitor.monitorId) {
+        updates.monitorId = crypto.randomUUID();
+        updated = true;
+    }
+
+    if (!monitor.type) {
+        updates.type = isHttps(monitor.url) ? 'HTTPS' : 'HTTP';
+        updated = true;
+    }
+
+    if (!monitor.timeout) {
+        updates.timeout = '30';
+        updated = true;
+    }
+
+    if (monitor.isActive === undefined) {
+        updates.isActive = true;
+        updated = true;
+    } else {
+        // Normalizar boolean
+        const normalizedActive = normalizeBoolean(monitor.isActive);
+        if (monitor.isActive !== normalizedActive) {
+            updates.isActive = normalizedActive;
             updated = true;
         }
     }
 
-    // Converter string para boolean se necessário
-    if (typeof monitor.isActive === 'string') {
-        monitor.isActive = monitor.isActive === 'true';
+    if (!monitor.createdAt) {
+        updates.createdAt = currentTimestamp;
         updated = true;
     }
 
     if (!monitor.alias) {
-        monitor.alias = `Monitor - ${extractHostname(monitor.url)}`;
+        updates.alias = `Monitor - ${extractHostname(monitor.url)}`;
         updated = true;
     }
 
-    if (!monitor.url) {
-        logger.error('Monitor sem URL encontrado');
-        monitor.isActive = false;
-        return monitor;
-    }
+    const updatedMonitor = { ...monitor, ...updates };
 
     if (updated) {
-        await saveMonitor(monitor);
-        logger.debug(`Monitor ${monitor.alias} atualizado`);
+        const saved = await saveMonitor(updatedMonitor);
+        if (saved) {
+            console.log(`[DEBUG] Monitor ${updatedMonitor.alias} atualizado`);
+        } else {
+            console.error(`[ERROR] Erro ao salvar monitor ${updatedMonitor.alias}`);
+        }
     }
 
-    return monitor;
+    return updatedMonitor;
 };
 
 const executeMonitoring = async (monitor) => {
     const { monitorId, url, alias } = monitor;
 
-    logger.info(`Verificando ${alias}`);
+    console.log(`[INFO] Verificando ${alias}`);
 
     try {
-        const timeout = safeParseInt(monitor.timeout, DEFAULTS.TIMEOUT);
+        const timeout = safeParseInt(monitor.timeout, 30);
         const httpResult = await checkHttp(url, timeout);
 
         let sslResult = {};
         if (isHttps(url)) {
-            logger.debug(`Executando checkSSL para ${url}`);
+            console.log(`[DEBUG] Executando checkSSL para ${url}`);
             sslResult = await checkSSL(url);
-            logger.debug(`SSL result: ${JSON.stringify(sslResult)}`);
+            console.log(`[DEBUG] SSL result: ${JSON.stringify(sslResult)}`);
         }
 
         const saved = await updateMonitorResult(monitorId, httpResult, sslResult);
 
-        logger.info(`${alias}: ${httpResult.status} (${httpResult.responseTime}ms)`);
+        console.log(`[INFO] ${alias}: ${httpResult.status} (${httpResult.responseTime}ms)`);
 
         return {
             monitorId,
@@ -89,8 +123,15 @@ const executeMonitoring = async (monitor) => {
         };
 
     } catch (error) {
-        logger.error(`Erro ao monitorar ${alias}:`, error.message);
-        return createErrorResult(monitor, error);
+        console.error(`[ERROR] Erro ao monitorar ${alias}:`, error.message);
+        return {
+            monitorId,
+            alias,
+            status: 'UNKNOWN',
+            responseTime: '0',
+            success: false,
+            error: error.message
+        };
     }
 };
 
@@ -98,33 +139,33 @@ const processMonitor = async (monitor) => {
     try {
         const preparedMonitor = await prepareMonitor(monitor);
 
-        // Verificar isActive como boolean
-        if (preparedMonitor.isActive === false) {
-            logger.debug(`Monitor ${preparedMonitor.alias} inativo, pulando...`);
+        // Skip monitor se inativo
+        if (!preparedMonitor.isActive) {
+            console.log(`[DEBUG] Monitor ${preparedMonitor.alias} inativo, pulando...`);
             return null;
         }
 
         const result = await executeMonitoring(preparedMonitor);
-        await sleep(DEFAULTS.MONITOR_DELAY);
+
+        // Delay entre monitores para evitar sobrecarga
+        await sleep(500);
 
         return result;
 
     } catch (error) {
-        logger.error(`Erro ao processar monitor ${monitor.monitorId}:`, error.message);
-        return createErrorResult(monitor, error);
+        console.error(`[ERROR] Erro ao processar monitor ${monitor.monitorId || 'unknown'}:`, error.message);
+        return {
+            monitorId: monitor.monitorId || 'unknown',
+            alias: monitor.alias || 'Unknown Monitor',
+            status: 'UNKNOWN',
+            responseTime: '0',
+            success: false,
+            error: error.message
+        };
     }
 };
 
-const createErrorResult = (monitor, error) => {
-    return {
-        monitorId: monitor.monitorId || 'unknown',
-        alias: monitor.alias || 'Unknown Monitor',
-        status: STATUS.UNKNOWN,
-        responseTime: '0',
-        success: false,
-        error: error.message
-    };
-};
+
 
 const calculateStats = (results) => {
     const validResults = results.filter(r => r !== null);
@@ -132,57 +173,63 @@ const calculateStats = (results) => {
     return {
         totalProcessed: validResults.length,
         successfulChecks: validResults.filter(r => r.success).length,
-        upMonitors: validResults.filter(r => r.status === STATUS.UP).length,
-        downMonitors: validResults.filter(r => r.status === STATUS.DOWN).length,
-        unknownMonitors: validResults.filter(r => r.status === STATUS.UNKNOWN).length
+        upMonitors: validResults.filter(r => r.status === 'UP').length,
+        downMonitors: validResults.filter(r => r.status === 'DOWN').length,
+        unknownMonitors: validResults.filter(r => r.status === 'UNKNOWN').length
     };
 };
 
-const logFinalStats = (results, executionTime) => {
-    const stats = calculateStats(results);
 
-    logger.info('=== Monitoramento concluído ===');
-    logger.info(`Total: ${stats.totalProcessed}`);
-    logger.info(`Sucesso: ${stats.successfulChecks}`);
-    logger.info(`UP: ${stats.upMonitors} | DOWN: ${stats.downMonitors} | UNKNOWN: ${stats.unknownMonitors}`);
-    logger.performance('Execução total', executionTime);
-};
 
 const handler = async (event, context) => {
     const startTime = Date.now();
 
     try {
-        logger.info('=== Iniciando monitoramento CONCORRENTE de endpoints ===');
+        console.log('[INFO] === Iniciando monitoramento CONCORRENTE de endpoints ===');
 
         const monitors = await getAllMonitors();
-        logger.info(`Encontrados ${monitors.length} monitores`);
+        console.log(`[INFO] Encontrados ${monitors.length} monitores`);
 
         if (monitors.length === 0) {
             return {
                 statusCode: 200,
                 body: JSON.stringify({
-                    message: 'No monitors found',
-                    ...calculateStats([]),
+                    message: 'Nenhum monitor encontrado',
+                    totalProcessed: 0,
+                    successfulChecks: 0,
+                    upMonitors: 0,
+                    downMonitors: 0,
+                    unknownMonitors: 0,
                     results: []
                 })
             };
         }
 
-        // Processamento CONCORRENTE
+        // Processamento CONCORRENTE com Promise.all
         const results = await Promise.all(
             monitors.map(monitor => processMonitor(monitor))
         );
 
         const validResults = results.filter(r => r !== null);
         const executionTime = Date.now() - startTime;
+        const stats = calculateStats(validResults);
 
-        logFinalStats(validResults, executionTime);
+        // Log do resultado
+        console.log('[INFO] === Monitoramento concluído ===');
+        console.log(`[INFO] Total: ${stats.totalProcessed}`);
+        console.log(`[INFO] Sucesso: ${stats.successfulChecks}`);
+        console.log(`[INFO] UP: ${stats.upMonitors} | DOWN: ${stats.downMonitors} | UNKNOWN: ${stats.unknownMonitors}`);
+        console.log(`[PERF] Execução total: ${executionTime}ms`);
 
         return {
             statusCode: 200,
             body: JSON.stringify({
-                message: 'Monitoring completed successfully',
-                ...calculateStats(validResults),
+                message: 'Monitoramento concluído com sucesso',
+                totalProcessed: stats.totalProcessed,
+                successfulChecks: stats.successfulChecks,
+                upMonitors: stats.upMonitors,
+                downMonitors: stats.downMonitors,
+                unknownMonitors: stats.unknownMonitors,
                 executionTimeMs: executionTime,
                 results: validResults
             })
@@ -190,12 +237,12 @@ const handler = async (event, context) => {
 
     } catch (error) {
         const executionTime = Date.now() - startTime;
-        logger.error('Erro fatal no monitoramento:', error.message);
+        console.error('[ERROR] Erro fatal no monitoramento:', error.message);
 
         return {
             statusCode: 500,
             body: JSON.stringify({
-                error: 'Internal server error',
+                error: 'Erro interno do servidor',
                 message: error.message,
                 executionTimeMs: executionTime
             })
