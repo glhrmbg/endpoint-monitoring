@@ -2,8 +2,6 @@ const { getAllMonitors, saveMonitor, updateMonitorResult } = require('./services
 const { checkHttp } = require('./services/httpService');
 const { checkSSL } = require('./services/sslService');
 const {
-    sleep,
-    extractHostname,
     isHttps,
     safeParseInt,
     isValidUrl,
@@ -33,7 +31,7 @@ const prepareMonitor = async (monitor) => {
         return {
             ...monitor,
             isActive: false,
-            alias: monitor.alias || 'Monitor Inválido'
+            alias: monitor.alias || monitor.url || 'Monitor Inválido'
         };
     }
 
@@ -72,11 +70,6 @@ const prepareMonitor = async (monitor) => {
 
     if (!monitor.createdAt) {
         updates.createdAt = currentTimestamp;
-        updated = true;
-    }
-
-    if (!monitor.alias) {
-        updates.alias = `Monitor - ${extractHostname(monitor.url)}`;
         updated = true;
     }
 
@@ -145,12 +138,7 @@ const processMonitor = async (monitor) => {
             return null;
         }
 
-        const result = await executeMonitoring(preparedMonitor);
-
-        // Delay entre monitores para evitar sobrecarga
-        await sleep(500);
-
-        return result;
+        return await executeMonitoring(preparedMonitor);
 
     } catch (error) {
         console.error(`[ERROR] Erro ao processar monitor ${monitor.monitorId || 'unknown'}:`, error.message);

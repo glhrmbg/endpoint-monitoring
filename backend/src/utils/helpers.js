@@ -1,16 +1,6 @@
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
 const calculateDaysUntilExpiry = (expiryDate) => {
     const days = Math.ceil((new Date(expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
     return days.toString();
-};
-
-const extractHostname = (url) => {
-    try {
-        return new URL(url).hostname;
-    } catch {
-        return 'Invalid URL';
-    }
 };
 
 const isHttps = (url) => url?.startsWith('https') || false;
@@ -36,9 +26,7 @@ const normalizeBoolean = (value) => {
 };
 
 module.exports = {
-    sleep,
     calculateDaysUntilExpiry,
-    extractHostname,
     isHttps,
     safeParseInt,
     isValidUrl,
