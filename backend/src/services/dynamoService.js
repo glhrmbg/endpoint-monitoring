@@ -1,7 +1,6 @@
 const { DynamoDBClient, ScanCommand, PutItemCommand, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
 const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
 
-// Inicialização direta - sem arquivo de config desnecessário
 const dynamoClient = new DynamoDBClient({
     region: process.env.AWS_REGION || 'us-east-1'
 });
@@ -10,13 +9,10 @@ const MONITORS_TABLE = process.env.MONITORS_TABLE || 'Monitors';
 
 const getAllMonitors = async () => {
     try {
-        const command = new ScanCommand({
+        const response = await dynamoClient.send(new ScanCommand({
             TableName: MONITORS_TABLE
-        });
-
-        const response = await dynamoClient.send(command);
+        }));
         return (response.Items || []).map(item => unmarshall(item));
-
     } catch (error) {
         console.error('[ERROR] Erro ao buscar monitores:', error.message);
         return [];
@@ -25,63 +21,35 @@ const getAllMonitors = async () => {
 
 const saveMonitor = async (monitor) => {
     try {
-        const command = new PutItemCommand({
+        await dynamoClient.send(new PutItemCommand({
             TableName: MONITORS_TABLE,
-            Item: marshall({
-                ...monitor,
-                isActive: Boolean(monitor.isActive)
-            }, {
-                removeUndefinedValues: true
-            })
-        });
-
-        await dynamoClient.send(command);
-        console.log(`[DEBUG] Monitor ${monitor.alias} salvo com sucesso`);
+            Item: marshall(monitor, { removeUndefinedValues: true })
+        }));
         return true;
-
     } catch (error) {
         console.error('[ERROR] Erro ao salvar monitor:', error.message);
         return false;
     }
 };
 
-const updateMonitorResult = async (monitorId, httpResult, sslResult) => {
+const updateMonitorResult = async (monitorId, httpResult, sslResult = {}) => {
     try {
-        // Processar sslResult
-        const processedSSLResult = {
-            ...sslResult,
-            isValid: Boolean(sslResult.isValid === 'true'),
-            alternativeNames: (() => {
-                try {
-                    const parsed = JSON.parse(sslResult.alternativeNames || '[]');
-                    return Array.isArray(parsed) ? parsed : [];
-                } catch {
-                    return [];
-                }
-            })()
-        };
-
-        // Remover campos vazios
-        Object.keys(processedSSLResult).forEach(key => {
-            if (processedSSLResult[key] === '' || processedSSLResult[key] === null) {
-                delete processedSSLResult[key];
-            }
-        });
-
         const updateData = {
-            lastChecked: Date.now().toString(),
+            lastChecked: Date.now(),
             currentStatus: httpResult.status,
             currentResponseTime: httpResult.responseTime,
-            currentStatusCode: httpResult.statusCode,
-            ssl: processedSSLResult
+            currentStatusCode: httpResult.statusCode
         };
 
-        // Só adicionar error se existir
-        if (httpResult.error && httpResult.error.trim() !== '') {
+        if (httpResult.error) {
             updateData.currentError = httpResult.error;
         }
 
-        const command = new UpdateItemCommand({
+        if (Object.keys(sslResult).length > 0) {
+            updateData.ssl = sslResult;
+        }
+
+        await dynamoClient.send(new UpdateItemCommand({
             TableName: MONITORS_TABLE,
             Key: marshall({ monitorId }),
             UpdateExpression: `SET ${Object.keys(updateData).map((key, index) => `#attr${index} = :val${index}`).join(', ')}`,
@@ -96,13 +64,10 @@ const updateMonitorResult = async (monitorId, httpResult, sslResult) => {
                 }, {}),
                 { removeUndefinedValues: true }
             )
-        });
-
-        await dynamoClient.send(command);
+        }));
         return true;
-
     } catch (error) {
-        console.error(`[ERROR] Erro ao salvar resultado para ${monitorId}:`, error.message);
+        console.error(`[ERROR] Erro ao salvar resultado:`, error.message);
         return false;
     }
 };
