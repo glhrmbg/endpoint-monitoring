@@ -32,7 +32,14 @@ functions:
     handler: src/handler.handler
     description: High-performance concurrent endpoint monitor
     timeout: 300
-    memorySize: 512
+    package:
+      patterns:
+        - '**'
+        - '!serverless.yml'
+        - '!node_modules/**'
+        - '!.serverless/**'
+        - '!package*.json'
+    memorySize: 1024
     events:
       - schedule:
           rate: rate(5 minutes)
@@ -60,6 +67,16 @@ resources:
           - Key: Stage
             Value: ${self:provider.stage}
 
+package:
+  individually: true
+  excludeDevDependencies: true
+  patterns:
+    - '!.serverless/**'
+    - '!node_modules/**'
+    - '!package*.json'
+    - '!serverless.yml'
+
 # Required plugins
 plugins:
   - serverless-offline
+  - serverless-latest-layer-version
