@@ -79,4 +79,3 @@ package:
 # Required plugins
 plugins:
   - serverless-offline
-  - serverless-latest-layer-version
