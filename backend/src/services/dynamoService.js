@@ -9,25 +9,35 @@ const MONITORS_TABLE = process.env.MONITORS_TABLE || 'Monitors';
 
 const getAllMonitors = async () => {
     try {
+        console.log(`Scanning monitors from table: ${MONITORS_TABLE}`);
+
         const response = await dynamoClient.send(new ScanCommand({
             TableName: MONITORS_TABLE
         }));
-        return (response.Items || []).map(item => unmarshall(item));
+
+        const monitors = (response.Items || []).map(item => unmarshall(item));
+        console.log(`Retrieved ${monitors.length} monitors from database`);
+
+        return monitors;
     } catch (error) {
-        console.error('[ERROR] Erro ao buscar monitores:', error.message);
-        return [];
+        console.error('Failed to retrieve monitors from database:', error.message);
+        throw new Error(`Database scan failed: ${error.message}`);
     }
 };
 
 const saveMonitor = async (monitor) => {
     try {
+        console.log(`Saving monitor: ${monitor.monitorId} (${monitor.alias || monitor.url})`);
+
         await dynamoClient.send(new PutItemCommand({
             TableName: MONITORS_TABLE,
             Item: marshall(monitor, { removeUndefinedValues: true })
         }));
+
+        console.log(`Successfully saved monitor: ${monitor.monitorId}`);
         return true;
     } catch (error) {
-        console.error('[ERROR] Erro ao salvar monitor:', error.message);
+        console.error(`Failed to save monitor ${monitor.monitorId}:`, error.message);
         return false;
     }
 };
@@ -43,11 +53,16 @@ const updateMonitorResult = async (monitorId, httpResult, sslResult = {}) => {
 
         if (httpResult.error) {
             updateData.currentError = httpResult.error;
+        } else {
+            // Remove error field if check succeeded
+            updateData.currentError = null;
         }
 
         if (Object.keys(sslResult).length > 0) {
             updateData.ssl = sslResult;
         }
+
+        console.log(`Updating monitor result: ${monitorId} - Status: ${httpResult.status}, Response Time: ${httpResult.responseTime}ms`);
 
         await dynamoClient.send(new UpdateItemCommand({
             TableName: MONITORS_TABLE,
@@ -63,11 +78,20 @@ const updateMonitorResult = async (monitorId, httpResult, sslResult = {}) => {
                     return acc;
                 }, {}),
                 { removeUndefinedValues: true }
-            )
+            ),
+            // Ensure the monitor exists before updating
+            ConditionExpression: 'attribute_exists(monitorId)'
         }));
+
+        console.log(`Successfully updated monitor result: ${monitorId}`);
         return true;
     } catch (error) {
-        console.error(`[ERROR] Erro ao salvar resultado:`, error.message);
+        if (error.name === 'ConditionalCheckFailedException') {
+            console.error(`Monitor ${monitorId} does not exist - cannot update result`);
+            return false;
+        }
+
+        console.error(`Failed to update monitor result for ${monitorId}:`, error.message);
         return false;
     }
 };

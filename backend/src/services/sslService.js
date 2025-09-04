@@ -20,6 +20,8 @@ const checkSSL = async (url) => {
             const { hostname, port } = new URL(url);
             const targetPort = port || 443;
 
+            console.log(`Starting SSL certificate check for ${hostname}:${targetPort}`);
+
             const socket = tls.connect({
                 host: hostname,
                 port: targetPort,
@@ -30,10 +32,13 @@ const checkSSL = async (url) => {
 
             socket.on('secureConnect', () => {
                 try {
+                    console.log(`SSL connection established for ${hostname}:${targetPort}`);
+
                     const cert = socket.getPeerCertificate(true);
 
                     if (!cert || Object.keys(cert).length === 0) {
-                        result.error = 'No certificate';
+                        console.error(`No SSL certificate found for ${hostname}:${targetPort}`);
+                        result.error = 'No certificate found';
                         return resolve(result);
                     }
 
@@ -59,12 +64,25 @@ const checkSSL = async (url) => {
                     result.cipherSuite = cipher?.name || '';
 
                     result.isValid = socket.authorized;
-                    if (!socket.authorized) {
-                        result.error = socket.authorizationError || 'Invalid cert';
+
+                    if (socket.authorized) {
+                        console.log(`SSL certificate is valid for ${hostname}:${targetPort} - Subject: ${result.subject}, Expires: ${result.daysUntilExpiry} days`);
+                    } else {
+                        const authError = socket.authorizationError || 'Certificate validation failed';
+                        console.warn(`SSL certificate validation failed for ${hostname}:${targetPort}: ${authError}`);
+                        result.error = authError;
                     }
 
-                } catch (err) {
-                    result.error = err.message;
+                    // Warning for certificates expiring soon
+                    if (result.daysUntilExpiry <= 30 && result.daysUntilExpiry > 0) {
+                        console.warn(`SSL certificate for ${hostname}:${targetPort} expires soon: ${result.daysUntilExpiry} days remaining`);
+                    } else if (result.daysUntilExpiry <= 0) {
+                        console.error(`SSL certificate for ${hostname}:${targetPort} has expired: ${Math.abs(result.daysUntilExpiry)} days ago`);
+                    }
+
+                } catch (error) {
+                    console.error(`Error processing SSL certificate for ${hostname}:${targetPort}: ${error.message}`);
+                    result.error = error.message;
                 } finally {
                     socket.end();
                     resolve(result);
@@ -72,17 +90,20 @@ const checkSSL = async (url) => {
             });
 
             socket.on('error', (error) => {
+                console.error(`SSL connection error for ${hostname}:${targetPort}: ${error.message}`);
                 result.error = error.message;
                 resolve(result);
             });
 
             socket.on('timeout', () => {
-                result.error = 'Timeout';
+                console.error(`SSL connection timeout for ${hostname}:${targetPort}`);
+                result.error = 'Connection timeout';
                 socket.destroy();
                 resolve(result);
             });
 
         } catch (error) {
+            console.error(`SSL check initialization failed for ${url}: ${error.message}`);
             result.error = error.message;
             resolve(result);
         }

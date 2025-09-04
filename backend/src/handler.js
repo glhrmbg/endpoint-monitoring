@@ -5,10 +5,15 @@ const calculateStats = (results) => {
     const validResults = results.filter(Boolean);
     return {
         totalProcessed: validResults.length,
+        totalMonitors: results.length,
         successfulChecks: validResults.filter(r => r.success).length,
+        failedChecks: validResults.filter(r => !r.success).length,
         upMonitors: validResults.filter(r => r.status === 'UP').length,
         downMonitors: validResults.filter(r => r.status === 'DOWN').length,
-        unknownMonitors: validResults.filter(r => r.status === 'UNKNOWN').length
+        unknownMonitors: validResults.filter(r => r.status === 'UNKNOWN').length,
+        averageResponseTime: validResults.length > 0
+            ? Math.round(validResults.reduce((sum, r) => sum + (r.responseTime || 0), 0) / validResults.length)
+            : 0
     };
 };
 
@@ -16,27 +21,40 @@ const handler = async (event, context) => {
     const startTime = Date.now();
 
     try {
-        console.log('[INFO] Iniciando monitoramento');
+        console.log('Starting endpoint monitoring process');
 
         const monitors = await getAllMonitors();
+        if (!Array.isArray(monitors)) {
+            throw new Error('Invalid monitors data received from database');
+        }
+
         if (monitors.length === 0) {
+            console.log('No monitors found in database');
             return {
                 statusCode: 200,
-                body: JSON.stringify({ message: 'Nenhum monitor encontrado' })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: 'No monitors found',
+                    timestamp: new Date().toISOString()
+                })
             };
         }
 
-        // Delegar processamento para o service
+        console.log(`Processing ${monitors.length} monitors`);
+
         const results = await processMonitors(monitors);
         const stats = calculateStats(results);
         const executionTime = Date.now() - startTime;
 
-        console.log(`[INFO] Concluído: UP:${stats.upMonitors} DOWN:${stats.downMonitors} (${executionTime}ms)`);
+        console.log(`Monitoring completed: UP=${stats.upMonitors} DOWN=${stats.downMonitors} UNKNOWN=${stats.unknownMonitors} (${executionTime}ms)`);
 
         return {
             statusCode: 200,
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                message: 'Monitoramento concluído',
+                success: true,
+                message: 'Monitoring completed successfully',
+                timestamp: new Date().toISOString(),
                 ...stats,
                 executionTimeMs: executionTime,
                 results: results.filter(Boolean)
@@ -45,13 +63,17 @@ const handler = async (event, context) => {
 
     } catch (error) {
         const executionTime = Date.now() - startTime;
-        console.error('[ERROR] Erro fatal:', error.message);
+
+        console.error('Fatal error during monitoring execution:', error.message);
 
         return {
             statusCode: 500,
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                error: 'Erro interno',
-                message: error.message,
+                success: false,
+                error: 'Internal server error',
+                message: 'Monitoring process failed',
+                timestamp: new Date().toISOString(),
                 executionTimeMs: executionTime
             })
         };
